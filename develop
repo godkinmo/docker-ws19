@@ -1,8 +1,40 @@
 #!/usr/bin/env bash
 
+UNAMEOUT="$(uname -s)"
+case "${UNAMEOUT}" in
+    Linux*)             MACHINE=linux;;
+    Darwin*)            MACHINE=mac;;
+    MINGW64_NT-10.0*)   MACHINE=mingw64;;
+    *)                  MACHINE="UNKNOWN"
+esac
+
+# Set environment variables for dev
+if [ "$MACHINE" == "linux" ]; then
+    if grep -q Microsoft /proc/version; then # WSL
+        export XDEBUG_HOST=10.0.75.1
+    else
+        if [ "$(command -v ip)" ]; then
+            export XDEBUG_HOST=$(ip addr show docker0 | grep "inet\b" | awk '{print $2}' | cut -d/ -f1)
+        else
+            export XDEBUG_HOST=$(ifconfig docker0 | grep "inet addr" | cut -d ':' -f 2 | cut -d ' ' -f 1)
+        fi
+    fi
+    SEDCMD="sed -i"
+elif [ "$MACHINE" == "mac" ]; then
+    export XDEBUG_HOST=$(ipconfig getifaddr en0) # Ethernet
+
+    if [ -z "$XDEBUG_HOST" ]; then
+        export XDEBUG_HOST=$(ipconfig getifaddr en1) # Wifi
+    fi
+    SEDCMD="sed -i .bak"
+elif [ "$MACHINE" == "mingw64" ]; then # Git Bash
+    export XDEBUG_HOST=10.0.75.1
+    SEDCMD="sed -i"
+fi
+
 # Set environment variables for dev
 export APP_ENV=${APP_ENV:-local}
-export APP_PORT=${APP_PORT:-3000}
+export APP_PORT=${APP_PORT:-80}
 export DB_PORT=${DB_PORT:-3306}
 export DB_ROOT_PASS=${DB_ROOT_PASS:-secret}
 export DB_NAME=${DB_NAME:-homestead}
@@ -15,50 +47,47 @@ COMPOSE_FILE="dev"
 # Create docker-compose command to run
 COMPOSE="docker-compose -f docker-compose.${COMPOSE_FILE}.yml"
 
+
+
+# Is the environment running
+PSRESULT="$($COMPOSE ps -q)"
+if [ ! -z "$PSRESULT" ]; then
+    EXEC="yes"
+else
+    EXEC="no"
+fi
+
 # If we pass any arguments...
 if [ $# -gt 0 ];then
 
-    # If "art" is used, pass-thru to "artisan"
+    # Start up containers
+    if [ "$1" == "start" ]; then
+        $COMPOSE up -d
+
+    # Stop the containers
+    elif [ "$1" == "stop" ]; then
+        $COMPOSE down
+
+    # If "ssh" is used, pass-thru to "ssh"
     # inside a new container
-    if [ "$1" == "art" ]; then
+    # e.g.: ./develop ssh app
+    # e.g.: ./develop ssh mysql
+    elif [ "$1" == "ssh" ]; then
         shift 1
-        $COMPOSE run --rm \
-            -w /var/www/html/projects/MO_JS-PHP_A \
-            app \
-            php artisan "$@"
-
-    # If "composer" is used, pass-thru to "composer"
-    # inside a new container
-    elif [ "$1" == "composer" ]; then
-        shift 1
-        $COMPOSE run --rm \
-            -w /var/www/html/projects \
-            app \
-            composer "$@"
-
-    # If "test" is used, run unit tests,
-    # pass-thru any extra arguments to php-unit
-    elif [ "$1" == "test" ]; then
-        shift 1
-        $COMPOSE run --rm \
-            -w /var/www/html/projects/MO_JS-PHP_A \
-            app \
-            ./vendor/bin/phpunit "$@"
-
-    # If "npm" is used, run npm
-    # from our node container
-    elif [ "$1" == "npm" ]; then
-        shift 1
-        $COMPOSE run --rm \
-            -w /var/www/html/projects/MO_JS-PHP_A \
-            node \
-            npm "$@"
+        if [ "$EXEC" == "yes" ] && [ "$1" != "node" ]; then
+            $COMPOSE exec \
+                $1 \
+                bash
+        else
+            $COMPOSE run --rm \
+                $1 \
+                bash
+        fi
 
     # Else, pass-thru args to docker-compose
     else
         $COMPOSE "$@"
     fi
-
 else
     $COMPOSE ps
 fi
